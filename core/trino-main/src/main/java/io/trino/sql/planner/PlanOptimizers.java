@@ -35,6 +35,7 @@ import io.trino.sql.planner.iterative.rule.CanonicalizeExpressions;
 import io.trino.sql.planner.iterative.rule.CreatePartialTopN;
 import io.trino.sql.planner.iterative.rule.DecorrelateInnerUnnestWithGlobalAggregation;
 import io.trino.sql.planner.iterative.rule.DecorrelateLeftUnnestWithGlobalAggregation;
+import io.trino.sql.planner.iterative.rule.DecorrelateUnnest;
 import io.trino.sql.planner.iterative.rule.DesugarArrayConstructor;
 import io.trino.sql.planner.iterative.rule.DesugarAtTimeZone;
 import io.trino.sql.planner.iterative.rule.DesugarCurrentPath;
@@ -176,6 +177,7 @@ import io.trino.sql.planner.iterative.rule.RemoveRedundantJoin;
 import io.trino.sql.planner.iterative.rule.RemoveRedundantLimit;
 import io.trino.sql.planner.iterative.rule.RemoveRedundantOffset;
 import io.trino.sql.planner.iterative.rule.RemoveRedundantSort;
+import io.trino.sql.planner.iterative.rule.RemoveRedundantSortBelowLimitWithTies;
 import io.trino.sql.planner.iterative.rule.RemoveRedundantTableScanPredicate;
 import io.trino.sql.planner.iterative.rule.RemoveRedundantTopN;
 import io.trino.sql.planner.iterative.rule.RemoveTrivialFilters;
@@ -452,6 +454,7 @@ public class PlanOptimizers
                                         new RemoveRedundantLimit(),
                                         new RemoveRedundantOffset(),
                                         new RemoveRedundantSort(),
+                                        new RemoveRedundantSortBelowLimitWithTies(),
                                         new RemoveRedundantTopN(),
                                         new RemoveRedundantDistinctLimit(),
                                         new RemoveRedundantCrossJoin(),
@@ -471,9 +474,7 @@ public class PlanOptimizers
                         ruleStats,
                         statsCalculator,
                         estimatedExchangesCostCalculator,
-                        ImmutableSet.of(
-                                new ImplementOffset(),
-                                new ImplementLimitWithTies(metadata))),
+                        ImmutableSet.of(new ImplementOffset())),
                 simplifyOptimizer,
                 new UnaliasSymbolReferences(metadata),
                 new IterativeOptimizer(
@@ -525,6 +526,7 @@ public class PlanOptimizers
                                 new TransformCorrelatedJoinToJoin(metadata),
                                 new DecorrelateInnerUnnestWithGlobalAggregation(),
                                 new DecorrelateLeftUnnestWithGlobalAggregation(),
+                                new DecorrelateUnnest(metadata),
                                 new TransformCorrelatedGlobalAggregationWithProjection(metadata),
                                 new TransformCorrelatedGlobalAggregationWithoutProjection(metadata),
                                 new TransformCorrelatedDistinctAggregationWithProjection(metadata),
@@ -536,6 +538,7 @@ public class PlanOptimizers
                         statsCalculator,
                         estimatedExchangesCostCalculator,
                         ImmutableSet.of(
+                                new ImplementLimitWithTies(metadata), // must be run after DecorrelateUnnest
                                 new RemoveUnreferencedScalarApplyNodes(),
                                 new TransformCorrelatedInPredicateToJoin(metadata), // must be run after columnPruningOptimizer
                                 new TransformCorrelatedScalarSubquery(metadata), // must be run after TransformCorrelatedAggregation rules
@@ -590,6 +593,7 @@ public class PlanOptimizers
                         .add(new PushJoinIntoTableScan(metadata))
                         .add(new PushAggregationIntoTableScan(metadata))
                         .add(new PushDistinctLimitIntoTableScan(metadata))
+                        .add(new PushTopNIntoTableScan(metadata))
                         .build());
         builder.add(pushIntoTableScanOptimizer);
         builder.add(new UnaliasSymbolReferences(metadata));
@@ -635,7 +639,7 @@ public class PlanOptimizers
                         estimatedExchangesCostCalculator,
                         SystemSessionProperties::useLegacyWindowFilterPushdown,
                         ImmutableList.of(new WindowFilterPushDown(metadata, typeOperators)),
-                        ImmutableSet.of(
+                        ImmutableSet.of(// should run after DecorrelateUnnest and ImplementLimitWithTies
                                 new PushdownLimitIntoRowNumber(),
                                 new PushdownLimitIntoWindow(metadata),
                                 new PushdownFilterIntoRowNumber(metadata, typeOperators),
@@ -712,8 +716,7 @@ public class PlanOptimizers
                         new CreatePartialTopN(),
                         new PushTopNThroughProject(),
                         new PushTopNThroughOuterJoin(),
-                        new PushTopNThroughUnion(),
-                        new PushTopNIntoTableScan(metadata))));
+                        new PushTopNThroughUnion())));
         builder.add(new IterativeOptimizer(
                 ruleStats,
                 statsCalculator,
